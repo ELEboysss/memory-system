@@ -127,6 +127,24 @@ Return:
 - The repository's current latest version (see *Versioning*).
 - The memory-system skill version (initial `v0.0.1`).
 
+## Hooks — mandatory automatic execution
+
+The following executions are mandatory, not optional. When the companion hook plugin (`memory-system-hooks`) is mounted, it enforces them by listening to host events and landing files itself; when it is not mounted, the agent MUST perform them itself at the same trigger points.
+
+| Trigger | Mandatory execution | Hook implementation |
+| --- | --- | --- |
+| Plan mode ends (`plan/mode` → `active: false`) | `memory-sync` the session into `{session_dir}` | Host `session/event` listener (plugin lands `session/`; plan/ and tickets/ stay agent-synced per the skill) |
+| Compaction completes (`compaction/end`; summary checkpoint `user/message`) | Generate or update `digest.md` with the compressed memory, then `memory-sync` | Host `session/event` listener |
+| Repository search starts (tools `glob` / `grep` / `read` / `pwsh` on repo files) | `memory-load` the relevant digest and inject it so the search is informed by prior memory | Host `tools/post-execute` result enrichment |
+| A turn closes (`agent/turn-stopping`) | Incremental `memory-sync` (session log append) | Host `agent/turn-stopping` listener |
+| The agent / session is disposed (`agent/disposed`) | Final `memory-sync` | Host `agent/disposed` listener |
+
+Notes:
+
+- The hook plugin exports the raw session log as `{session_dir}/session/events.jsonl` — JSONL of `{seq, type, data}` session events, append-only — plus `session/README.md` describing the export. This is the plugin's `session/` content format; the agent may add its own files alongside it.
+- When the hook plugin is mounted it also registers the `memory_sync_now` model tool, which forces a sync of the current session through the same code path as the hooks (equivalent to a manual `memory-sync`).
+- The hooks land files directly with the filesystem service; they guarantee the trigger points but do not replace the agent-side operations in this document — when the plugin is absent, the agent performs those operations at the same triggers.
+
 ## Rules and invariants
 
 - The memory root and all session directories live under `<repo-root>/.memory`; never scatter memory elsewhere.

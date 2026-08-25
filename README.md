@@ -56,6 +56,22 @@ Once collected, `memory-system` appears in the dsh session's skill catalog and i
             └── tickets/  # actionable items decomposed from the plan (updatable)
 ```
 
+## Mandatory hooks — companion plugin
+
+The skill's contract (see `SKILL.md` → *Hooks — mandatory automatic execution*) requires automatic executions at five trigger points. A skill alone is instructions only; the **companion hook plugin** (`plugin/memory-system-hooks.js`, host half of a Cordis plugin) enforces them by listening to host events:
+
+| Trigger | Mandatory execution | Host event |
+| --- | --- | --- |
+| Plan mode ends (`plan/mode` → `active: false`) | `memory-sync` | `session/event` |
+| Compaction completes | write `digest.md`, then `memory-sync` | `session/event` (`compaction/end`, checkpoint `user/message`) |
+| Repository search (`glob`/`grep`/`read`/`pwsh`) | inject relevant digest into the result | `tools/post-execute` |
+| A turn closes | incremental `memory-sync` | `agent/turn-stopping` |
+| Agent / session disposed | final `memory-sync` | `agent/disposed` |
+
+It also registers the `memory_sync_now` model tool (manual sync through the same code path). Writes carry the session's resolved sandbox policy, so under the default `workspace-write` mode it persists `<session-cwd>/.memory/…` within the same confinement as the agent's own tools.
+
+Install (one-time, per session): paste the `return { … }` expression into `cordis_define` (`code.host`) and `cordis_run`; for persistence, mount the same code as a preset plugin row.
+
 ## Versions
 
 - memory-system skill version: `v0.0.1`
