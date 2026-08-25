@@ -264,11 +264,21 @@ export default {
     });
 
     // ── model tool: force a sync now; sessionId is agent-specified (skill) ──
+    // NOTE: a preset-loaded module cannot import the harness packages, so the
+    // parameters are the FULL JSON-Schema form ctx.tools.register expects
+    // ({ type: 'object', properties, required }) rather than the shorthand
+    // DSL that harness.defineTool normalizes in the dynamic variant (.js).
     const tools = ctx.get('tools');
     tools?.register({
       name: 'memory_sync_now',
       description: 'Force a memory-system sync of the current session. sessionId is required and agent-specified per the skill (e.g. \'my-session\'): it is remembered and reused by the hooks; call again with a different id to switch. Writes <repo-root>/.memory/{version}/{date}/{sessionId}/session/ (same code path as the hooks; existing dirs are matched by sessionId and reused).',
-      parameters: { sessionId: { type: 'string', required: true } },
+      parameters: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string', description: 'Agent-specified session id (remembered and reused by the hooks).' },
+        },
+        required: ['sessionId'],
+      },
       output: { schema: { type: 'string' }, render(_a, v) { return [{ type: 'text', text: v }] } },
       async execute(args, exec) {
         const s = sessionOf(exec?.agent);
