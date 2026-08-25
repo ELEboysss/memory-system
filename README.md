@@ -72,6 +72,22 @@ It also registers the `memory_sync_now(sessionId)` model tool — `sessionId` is
 
 Install (one-time, per session): paste the `return { … }` expression into `cordis_define` (`code.host`) and `cordis_run`; for persistence, mount the same code as a preset plugin row.
 
+### Auto-mounting in every session
+
+The skill itself is already collected at the dsh user root (`~/.dsh/skills/memory-system`), so every session's skill catalog advertises it. To auto-mount the hook plugin in every session, add it to an agent preset:
+
+1. Copy a shipped preset into the user root (`agentPresets.copy`), e.g. `standard` → id `memory`:
+   `copy(from: 'standard', id: 'memory', name: 'Memory System')`.
+2. Place `plugin/memory-system-hooks.mjs` (the ESM module variant) at `<preset>/plugin/memory-system-hooks.mjs`.
+3. Append a row to the copy's `agent.cordis.yml`:
+   ```yaml
+   - id: memory-system-hooks
+     name: './plugin/memory-system-hooks.mjs'
+   ```
+4. Mount-validate with `standingKeyFor('memory')`, then start sessions on that preset in the UI.
+
+Do not base the preset on a copy of `cordis`: its `tool-cordis` row registers a process-global inspect provider, so a second cordis-based preset collides with a live cordis session (`Service already registered`). `standard` mounts cleanly.
+
 ## Versions
 
 - memory-system skill version: `v0.0.1`
