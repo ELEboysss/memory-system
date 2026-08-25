@@ -1,0 +1,6 @@
+# Runtime agent-memory data written by this skill — never committed.
+/.memory/
+
+# OS cruft
+.DS_Store
+Thumbs.db
