@@ -74,7 +74,7 @@ Install (one-time, per session): paste the `return { … }` expression into `cor
 
 ### Auto-mounting in every session
 
-The skill itself is already collected at the dsh user root (`~/.dsh/skills/memory-system`), so every session's skill catalog advertises it. To auto-mount the hook plugin in every session, add it to an agent preset:
+The skill itself is already collected at the dsh user root (`~/.dsh/skills/memory-system`), so every session's skill catalog advertises it. To auto-mount the hook plugin in every session, **run the skill's `memory-dsh-hook` operation** — the documented one-time setup any new user (or any agent with this skill loaded) can follow. It performs the steps below automatically:
 
 1. Copy a shipped preset into the user root (`agentPresets.copy`), e.g. `standard` → id `memory`:
    `copy(from: 'standard', id: 'memory', name: 'Memory System')`.

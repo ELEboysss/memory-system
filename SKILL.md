@@ -123,9 +123,31 @@ Show memory help.
 
 Return:
 
-- A brief description of each memory operation (`memory-sync`, `memory-load`, `memory-delete`, `memory-search`, `memory-info`, `memory-help`).
+- A brief description of each memory operation (`memory-sync`, `memory-load`, `memory-delete`, `memory-search`, `memory-info`, `memory-help`, `memory-dsh-hook`).
 - The repository's current latest version (see *Versioning*).
 - The memory-system skill version (initial `v0.0.1`).
+
+### memory-dsh-hook
+
+Install the memory-system companion hook plugin into an agent preset so that every new session on that preset auto-mounts the hooks (plan-mode-end sync, compaction digest, repo-search memory injection, turn-close sync, dispose sync). Use this when a user wants the hooks in every session without per-session dynamic mounting — the one-time setup a new user runs.
+
+Steps:
+
+1. **Confirm the skill is collected** so the catalog advertises `memory-system` (typical: the user root `~/.dsh/skills/memory-system`, a git clone of the skill repository). The companion module ships with the repository at `plugin/memory-system-hooks.mjs`; copy it from the skill's resource base, or clone the memory-system repository if the collection lacks the file.
+2. **Choose the preset base.** Copy `standard` (the full coding agent). Do NOT base it on `cordis`: its `tool-cordis` row publishes a process-global inspect provider, so a second cordis-based preset collides with a live cordis session (`Service already registered`).
+3. **Create the user preset** through the `agentPresets` service — mount a temporary probe plugin (`inject: ['agentPresets']`, e.g. via the cordis dynamic-plugin tools) and call `copy(from, id, name)`; the id must match `[a-z0-9][a-z0-9-]*` (default `memory`, name `Memory System`). It copies the composition, metadata, skill directories, and assets into the user root.
+4. **Write the plugin module** at `<preset>/plugin/memory-system-hooks.mjs` (the ESM module variant, `export default` + `ctx.tools.register` + `exec.agent`; relative row names resolve against the composition directory).
+5. **Append the row** to the copy's `agent.cordis.yml`:
+   ```yaml
+   - id: memory-system-hooks
+     name: './plugin/memory-system-hooks.mjs'
+   ```
+6. **Mount-validate**: call `standingKeyFor(id)`; it must return normally (a failure names the offending row — fix and retry).
+7. **Hand off**: tell the user to start sessions on the new preset; the hooks then auto-mount in every session. The skill-catalog entry comes from step 1 and needs no preset work.
+
+Fallback without probe tooling: perform steps 3–5 with plain filesystem tools (copy the preset directory, write the module and the row), then validate with `standingKeyFor` through a probe.
+
+To uninstall, remove the `memory-system-hooks` row and the preset via `agentPresets.remove(id)` (or delete the preset directory).
 
 ## Hooks — mandatory automatic execution
 
@@ -144,6 +166,7 @@ Notes:
 - The hook plugin exports the raw session log as `{session_dir}/session/events.jsonl` — JSONL of `{seq, type, data}` session events, append-only — plus `session/README.md` describing the export. This is the plugin's `session/` content format; the agent may add its own files alongside it.
 - When the hook plugin is mounted it also registers the `memory_sync_now` model tool, which forces a sync of the current session through the same code path as the hooks. Its `sessionId` is agent-specified and required (e.g. `memory_sync_now(sessionId: 'my-session')`): the id is remembered and reused by every hook, and sync matches existing `{session_dir}` directories by it. Before the agent specifies an id, hooks fall back to a sanitized session-title slug — never the internal session UUID.
 - The hooks land files directly with the filesystem service; they guarantee the trigger points but do not replace the agent-side operations in this document — when the plugin is absent, the agent performs those operations at the same triggers.
+- To install the hook plugin so it auto-mounts in every session, run the `memory-dsh-hook` operation (see *Operations*); it copies a `standard`-based preset, wires `plugin/memory-system-hooks.mjs` into it, and mount-validates the result.
 
 ## Rules and invariants
 
