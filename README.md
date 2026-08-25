@@ -62,8 +62,8 @@ The skill's contract (see `SKILL.md` → *Hooks — mandatory automatic executio
 
 | Trigger | Mandatory execution | Host event |
 | --- | --- | --- |
-| Plan mode ends (`plan/mode` → `active: false`) | `memory-sync` | `session/event` |
-| Compaction completes | write `digest.md`, then `memory-sync` | `session/event` (`compaction/end`, checkpoint `user/message`) |
+| Plan mode ends (`plan/mode` → `active: false`) | `memory-sync`, capturing the approved plan into `plan/` | `session/event` |
+| Compaction completes | write `digest.md`, then `memory-sync` | `session/event` (`compaction/summary` + `compaction/end`, checkpoint `user/message`) |
 | Repository search (`glob`/`grep`/`read`/`pwsh`) | inject relevant digest into the result | `tools/post-execute` |
 | A turn closes | incremental `memory-sync` | `agent/turn-stopping` |
 | Agent / session disposed | final `memory-sync` | `agent/disposed` |

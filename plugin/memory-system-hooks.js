@@ -4,8 +4,10 @@
 // automatic executions ("hooks") by listening to host events and landing files
 // directly with the filesystem service:
 //
-//   - plan mode ends (session/event, plan/mode → active:false) → memory-sync
-//   - compaction completes (session/event, compaction/end + checkpoint
+//   - plan mode ends (session/event, plan/mode → active:false) → memory-sync,
+//     plus capture the approved plan into plan/ (extracted from the
+//     `exit_plan_mode` tool call arguments)
+//   - compaction completes (session/event: compaction/summary + checkpoint
 //     user/message) → write digest.md, then memory-sync
 //   - repository search (tools/post-execute on glob/grep/read/pwsh) → inject
 //     the relevant digest into the search result (memory-load)
@@ -182,11 +184,22 @@ return {
       } catch (e) { err('sync failed', reason, String(e)); }
     }
 
-    // Compaction writes a replacement user/message whose source marks the
-    // compact checkpoint; its content IS the compressed memory → digest.md.
+    // Compaction vocabulary (host, verified against live session events):
+    //   compaction/start → compaction/summary (data.summary = content blocks
+    //   of the compressed memory) → checkpoint user/message (data.content =
+    //   the same compressed memory; data.source = {kind:'plugin',
+    //   plugin:'compact'}) → compaction/end.
     function isCompactCheckpoint(event) {
       const src = event?.data?.source;
       return event?.type === 'user/message' && src?.kind === 'plugin' && src?.plugin === 'compact';
+    }
+    // Digest source blocks: compaction/summary's data.summary is the cleanest;
+    // the checkpoint user/message carries the same memory in data.content
+    // (NOT data.message.content — that field does not exist on user messages).
+    function digestBlocksFromEvent(event) {
+      if (event?.type === 'compaction/summary') return event?.data?.summary ?? [];
+      if (event?.type === 'user/message') return event?.data?.content ?? [];
+      return [];
     }
 
     async function writeDigest(session, event) {
@@ -197,13 +210,52 @@ return {
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
         const { dir } = await resolveSessionDir(repoRoot, sessionId);
-        const blocks = event?.data?.message?.content ?? [];
+        const blocks = digestBlocksFromEvent(event);
         const text = blocks.filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim();
         if (!text) return;
         await writeTextSafe(join(dir, 'digest.md'),
           `# Memory digest\n\n> generated on compaction ${new Date().toISOString()}\n\n${text}\n`, policy);
         log('digest written', sessionId, dir);
       } catch (e) { err('digest failed', String(e)); }
+    }
+
+    // Plan capture: the approved plan lives in the `exit_plan_mode` tool call
+    // arguments ({"plan":"<markdown>"}). Scan the session events backward for
+    // the last such call and land it under plan/ (one file per plan, named by
+    // its first heading when present). `/plan off` without a plan writes
+    // nothing (logs a skip).
+    function extractPlanText(events) {
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        if (ev?.type !== 'tool/call' || ev?.data?.name !== 'exit_plan_mode') continue;
+        try {
+          const args = typeof ev.data.arguments === 'string' ? JSON.parse(ev.data.arguments) : ev.data.arguments;
+          const plan = typeof args?.plan === 'string' ? args.plan.trim() : '';
+          if (plan) return plan;
+        } catch { /* malformed arguments; keep scanning */ }
+      }
+      return undefined;
+    }
+    function planFileName(plan) {
+      const m = /^#{1,6}\s+(.+?)\s*$/m.exec(plan.trim());
+      const slug = m ? sanitizeSessionId(m[1]) : undefined;
+      return slug ? `${slug}.md` : 'plan.md';
+    }
+    async function writePlan(session, reason) {
+      try {
+        const s = sessionOf(session);
+        if (!s || !s.cwd) return;
+        const plan = extractPlanText(s.events ?? []);
+        if (!plan) { log('plan skipped (no exit_plan_mode plan in events)', reason); return; }
+        const sessionId = resolveSessionId(session, s.dshId);
+        const policy = policyFor(session);
+        const repoRoot = await findRepoRoot(s.cwd);
+        const { dir } = await resolveSessionDir(repoRoot, sessionId);
+        const w = await writeTextSafe(join(dir, 'plan', planFileName(plan)),
+          `> captured on plan-mode exit ${new Date().toISOString()}\n\n${plan}\n`, policy);
+        if (w.ok) log('plan written', sessionId, reason, join(dir, 'plan'));
+        else err('plan write failed', reason, w.error);
+      } catch (e) { err('plan failed', String(e)); }
     }
 
     // Newest digest under the repo's .memory, for search-result injection.
@@ -233,11 +285,15 @@ return {
       } catch (e) { err('memory block failed', String(e)); return undefined; }
     }
 
-    // ── hook: session events (plan-mode end, compaction digest, compaction end) ──
+    // ── hook: session events (plan-mode end → sync + plan; compaction →
+    //    summary/checkpoint digest + end sync) ──
     ctx.on('session/event', (session, event) => {
-      if (event?.type === 'plan/mode' && event?.data?.active === false) void syncSession(session, 'plan-mode-end');
+      if (event?.type === 'plan/mode' && event?.data?.active === false) {
+        void syncSession(session, 'plan-mode-end');
+        void writePlan(session, 'plan-mode-end');
+      }
+      if (event?.type === 'compaction/summary' || isCompactCheckpoint(event)) void writeDigest(session, event);
       if (event?.type === 'compaction/end') void syncSession(session, 'compaction');
-      if (isCompactCheckpoint(event)) void writeDigest(session, event);
     });
 
     // ── hook: turn close → incremental sync ──

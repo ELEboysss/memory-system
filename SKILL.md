@@ -157,8 +157,8 @@ The following executions are mandatory, not optional. When the companion hook pl
 
 | Trigger | Mandatory execution | Hook implementation |
 | --- | --- | --- |
-| Plan mode ends (`plan/mode` → `active: false`) | `memory-sync` the session into `{session_dir}` | Host `session/event` listener (plugin lands `session/`; plan/ and tickets/ stay agent-synced per the skill) |
-| Compaction completes (`compaction/end`; summary checkpoint `user/message`) | Generate or update `digest.md` with the compressed memory, then `memory-sync` | Host `session/event` listener |
+| Plan mode ends (`plan/mode` → `active: false`) | `memory-sync` the session into `{session_dir}`, capturing the approved plan into `plan/` | Host `session/event` listener (plugin lands `session/` and `plan/`; `tickets/` stays agent-synced per the skill) |
+| Compaction completes (`compaction/summary`, `compaction/end`, checkpoint `user/message`) | Generate or update `digest.md` with the compressed memory, then `memory-sync` | Host `session/event` listener (writes `digest.md` from the `compaction/summary` blocks or the compact checkpoint `user/message` content, then syncs `session/`) |
 | Repository search starts (tools `glob` / `grep` / `read` / `pwsh` on repo files) | `memory-load` the relevant digest and inject it so the search is informed by prior memory | Host `tools/post-execute` result enrichment |
 | A turn closes (`agent/turn-stopping`) | Incremental `memory-sync` (session log append) | Host `agent/turn-stopping` listener |
 | The agent / session is disposed (`agent/disposed`) | Final `memory-sync` | Host `agent/disposed` listener |
@@ -166,6 +166,7 @@ The following executions are mandatory, not optional. When the companion hook pl
 Notes:
 
 - The hook plugin exports the raw session log as `{session_dir}/session/events.jsonl` — JSONL of `{seq, type, data}` session events, append-only — plus `session/README.md` describing the export. This is the plugin's `session/` content format; the agent may add its own files alongside it.
+- On plan-mode end the plugin lands the approved plan under `{session_dir}/plan/`, one file per plan named by its first markdown heading (fallback `plan.md`), extracted from the `exit_plan_mode` tool-call arguments. On compaction it writes `{session_dir}/digest.md` from the `compaction/summary` blocks (or the compact checkpoint `user/message` content when no summary block exists), then syncs `session/`.
 - When the hook plugin is mounted it also registers the `memory_sync_now` model tool, which forces a sync of the current session through the same code path as the hooks. Its `sessionId` is agent-specified and required (e.g. `memory_sync_now(sessionId: 'my-session')`): the id is remembered and reused by every hook, and sync matches existing `{session_dir}` directories by it. Before the agent specifies an id, hooks fall back to a sanitized session-title slug — never the internal session UUID.
 - The hooks land files directly with the filesystem service; they guarantee the trigger points but do not replace the agent-side operations in this document — when the plugin is absent, the agent performs those operations at the same triggers.
 - To install the hook plugin so it auto-mounts in every session, run the `memory-dsh-hook` operation (see *Operations*); it copies a `standard`-based preset, wires `plugin/memory-system-hooks.mjs` into it, and mount-validates the result.
