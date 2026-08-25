@@ -86,6 +86,8 @@ The skill itself is already collected at the dsh user root (`~/.dsh/skills/memor
    ```
 4. Mount-validate with `standingKeyFor('memory')`, then start sessions on that preset in the UI.
 
+> **Updating the plugin later:** row modules are cached per process and a standing generation only recomposes when `agent.cordis.yml` changes. After editing `plugin/memory-system-hooks.mjs`, restart the process — or point the row at a new file name (e.g. `memory-system-hooks-v2.mjs`) so the next session imports the fresh module.
+
 Do not base the preset on a copy of `cordis`: its `tool-cordis` row registers a process-global inspect provider, so a second cordis-based preset collides with a live cordis session (`Service already registered`). `standard` mounts cleanly.
 
 ## Versions

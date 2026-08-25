@@ -147,6 +147,8 @@ Steps:
 
 Fallback without probe tooling: perform steps 3–5 with plain filesystem tools (copy the preset directory, write the module and the row), then validate with `standingKeyFor` through a probe.
 
+Operational note — updating the module later: row modules are cached per process (Node ESM) and a standing generation only recomposes when `agent.cordis.yml` changes, so editing `plugin/memory-system-hooks.mjs` alone is NOT picked up by a running process. After a module change, restart the process, or point the row at a new file name (e.g. `memory-system-hooks-v2.mjs`) so the next session imports a fresh module.
+
 To uninstall, remove the `memory-system-hooks` row and the preset via `agentPresets.remove(id)` (or delete the preset directory).
 
 ## Hooks — mandatory automatic execution
