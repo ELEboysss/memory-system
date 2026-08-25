@@ -68,7 +68,7 @@ The skill's contract (see `SKILL.md` → *Hooks — mandatory automatic executio
 | A turn closes | incremental `memory-sync` | `agent/turn-stopping` |
 | Agent / session disposed | final `memory-sync` | `agent/disposed` |
 
-It also registers the `memory_sync_now` model tool (manual sync through the same code path). Writes carry the session's resolved sandbox policy, so under the default `workspace-write` mode it persists `<session-cwd>/.memory/…` within the same confinement as the agent's own tools.
+It also registers the `memory_sync_now(sessionId)` model tool — `sessionId` is agent-specified and required per the skill (e.g. `memory_sync_now(sessionId: 'my-session')`), remembered and reused by every hook; before the agent specifies one, hooks fall back to a sanitized session-title slug. Writes carry the session's resolved sandbox policy, so under the default `workspace-write` mode it persists `<session-cwd>/.memory/…` within the same confinement as the agent's own tools.
 
 Install (one-time, per session): paste the `return { … }` expression into `cordis_define` (`code.host`) and `cordis_run`; for persistence, mount the same code as a preset plugin row.
 

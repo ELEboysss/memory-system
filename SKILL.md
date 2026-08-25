@@ -142,7 +142,7 @@ The following executions are mandatory, not optional. When the companion hook pl
 Notes:
 
 - The hook plugin exports the raw session log as `{session_dir}/session/events.jsonl` — JSONL of `{seq, type, data}` session events, append-only — plus `session/README.md` describing the export. This is the plugin's `session/` content format; the agent may add its own files alongside it.
-- When the hook plugin is mounted it also registers the `memory_sync_now` model tool, which forces a sync of the current session through the same code path as the hooks (equivalent to a manual `memory-sync`).
+- When the hook plugin is mounted it also registers the `memory_sync_now` model tool, which forces a sync of the current session through the same code path as the hooks. Its `sessionId` is agent-specified and required (e.g. `memory_sync_now(sessionId: 'my-session')`): the id is remembered and reused by every hook, and sync matches existing `{session_dir}` directories by it. Before the agent specifies an id, hooks fall back to a sanitized session-title slug — never the internal session UUID.
 - The hooks land files directly with the filesystem service; they guarantee the trigger points but do not replace the agent-side operations in this document — when the plugin is absent, the agent performs those operations at the same triggers.
 
 ## Rules and invariants

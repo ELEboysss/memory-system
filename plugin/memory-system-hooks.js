@@ -12,11 +12,21 @@
 //   - turn closes (agent/turn-stopping) → incremental memory-sync
 //   - agent disposed (agent/disposed) → final memory-sync
 //
+// Directory spec (skill): the session dir is
+// `<repo-root>/.memory/{version}/{date}/{sessionId}` where `sessionId` is
+// AGENT-SPECIFIED. The plugin resolves it in this order:
+//   1. the id the agent gave `memory_sync_now(sessionId)` (remembered for the
+//      session and reused by every hook; call with another id to switch)
+//   2. a slug derived from the session title
+//   3. a short hash of the dsh session id (never the raw internal UUID)
+// `memory-sync` matches by `sessionId` across versions/dates and reuses an
+// existing `{session_dir}`; only when none exists it creates one under the
+// latest version and today's date.
+//
 // Usage: paste this file's `return { … }` expression into cordis_define
-// (code.host), or mount it as a preset plugin row with
-// `@deepseek-ai/dsh-...`-style host wiring. It registers one model tool,
-// `memory_sync_now`, that forces a sync of the current session through the
-// same code path as the hooks.
+// (code.host), or mount it as a preset plugin row. It registers one model
+// tool, `memory_sync_now(sessionId)`, that forces a sync of the current
+// session through the same code path as the hooks.
 //
 // The plugin writes with the session's resolved sandbox policy, so it obeys
 // the same filesystem confinement as the agent's own tools: under the default
@@ -30,9 +40,11 @@ return {
     const MEMORY_DIR = '.memory';
     const DIGEST_MAX_CHARS = 2000;
     const MAX_EVENTS = 2000; // rolling window for session/events.jsonl
-    const lastSynced = new Map(); // sessionId -> last seq appended
+    const lastSynced = new Map(); // dshSessionId -> last seq appended
     const rootCache = new Map(); // cwd -> repo root
+    const agentIds = new Map(); // dshSessionId -> agent-specified sessionId
     const policyService = ctx.get('sandboxPolicy');
+    const titleService = ctx.get('sessionTitle');
 
     const log = (...args) => console.log('[memory-system-hooks]', ...args);
     const err = (...args) => console.error('[memory-system-hooks]', ...args);
@@ -44,6 +56,28 @@ return {
     // confinement as the agent's own tools (workspace-write by default).
     function policyFor(session) {
       try { return policyService?.resolve({ session }); } catch { return undefined; }
+    }
+
+    // sessionId is agent-specified per the skill; sanitized to a safe path
+    // segment (lowercase alphanumerics, `-`, `_`).
+    function sanitizeSessionId(raw) {
+      const slug = String(raw).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+      return slug.length > 0 ? slug : undefined;
+    }
+    function hashId(input) {
+      let h = 5381;
+      for (let i = 0; i < input.length; i++) h = ((h * 33) ^ input.charCodeAt(i)) >>> 0;
+      return `session-${h.toString(16).padStart(8, '0')}`;
+    }
+    function resolveSessionId(session, dshId) {
+      const specified = agentIds.get(dshId);
+      if (specified) return specified;
+      try {
+        const title = titleService?.get(session)?.title;
+        const slug = sanitizeSessionId(title);
+        if (slug) return slug;
+      } catch { /* fall through */ }
+      return hashId(dshId);
     }
 
     async function statPath(path) {
@@ -92,18 +126,28 @@ return {
       return `${d.getFullYear()}${mm}${dd}`;
     }
 
+    // memory-sync matches by {sessionId} across versions/dates and REUSES an
+    // existing {session_dir}; only when none exists it creates one under the
+    // latest version and today's date. (skill: memory-sync semantics)
     async function resolveSessionDir(repoRoot, sessionId) {
       const memoryRoot = join(repoRoot, MEMORY_DIR);
-      const versions = await listDirNames(memoryRoot);
-      const version = versions.length ? versions.sort().at(-1) : 'v0.0.1';
-      return join(memoryRoot, version, today(), sessionId);
+      const versions = (await listDirNames(memoryRoot)).sort();
+      for (let i = versions.length - 1; i >= 0; i--) {
+        const dates = (await listDirNames(join(memoryRoot, versions[i]))).sort();
+        for (let j = dates.length - 1; j >= 0; j--) {
+          const sids = await listDirNames(join(memoryRoot, versions[i], dates[j]));
+          if (sids.includes(sessionId)) return { dir: join(memoryRoot, versions[i], dates[j], sessionId), reused: true };
+        }
+      }
+      const version = versions.length ? versions[versions.length - 1] : 'v0.0.1';
+      return { dir: join(memoryRoot, version, today(), sessionId), reused: false };
     }
 
     function sessionOf(agentOrSession) {
       const s = agentOrSession?.session ?? agentOrSession;
       if (!s) return undefined;
       return {
-        id: String(s.header?.id ?? s.id ?? 'unknown'),
+        dshId: String(s.header?.id ?? s.id ?? 'unknown'),
         cwd: s.header?.cwd ?? s.meta?.cwd,
         events: s.events ?? [],
       };
@@ -113,11 +157,12 @@ return {
       try {
         const s = sessionOf(session);
         if (!s || !s.cwd) { err('sync skipped: no cwd', reason); return; }
+        const sessionId = resolveSessionId(session, s.dshId);
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
-        const dir = await resolveSessionDir(repoRoot, s.id);
+        const { dir } = await resolveSessionDir(repoRoot, sessionId);
         const events = s.events;
-        const lastSeq = lastSynced.get(s.id) ?? -1;
+        const lastSeq = lastSynced.get(s.dshId) ?? -1;
         const fresh = events.filter((ev) => Number.isInteger(ev.seq) && ev.seq > lastSeq);
         if (fresh.length === 0) return;
         const logPath = join(dir, 'session', 'events.jsonl');
@@ -127,10 +172,10 @@ return {
         if (lines.length > MAX_EVENTS) lines.splice(0, lines.length - MAX_EVENTS);
         const w1 = await writeTextSafe(logPath, `${lines.join('\n')}\n`, policy);
         const w2 = await writeTextSafe(join(dir, 'session', 'README.md'),
-          `# Session export (memory-system-hooks)\n\n- sessionId: ${s.id}\n- repo root: ${repoRoot}\n- last sync: ${reason} @ ${new Date().toISOString()}\n- format: JSONL of {seq, type, data} session events, append-only, rolling window of the last ${MAX_EVENTS} events.\n`, policy);
+          `# Session export (memory-system-hooks)\n\n- sessionId: ${sessionId}\n- repo root: ${repoRoot}\n- last sync: ${reason} @ ${new Date().toISOString()}\n- format: JSONL of {seq, type, data} session events, append-only, rolling window of the last ${MAX_EVENTS} events.\n`, policy);
         if (w1.ok && w2.ok) {
-          lastSynced.set(s.id, events[events.length - 1].seq);
-          log('synced', s.id, reason, fresh.length, 'events ->', dir);
+          lastSynced.set(s.dshId, events[events.length - 1].seq);
+          log('synced', sessionId, reason, fresh.length, 'events ->', dir);
         } else {
           err('sync write failed', reason, w1.error ?? w2.error);
         }
@@ -148,15 +193,16 @@ return {
       try {
         const s = sessionOf(session);
         if (!s || !s.cwd) return;
+        const sessionId = resolveSessionId(session, s.dshId);
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
-        const dir = await resolveSessionDir(repoRoot, s.id);
+        const { dir } = await resolveSessionDir(repoRoot, sessionId);
         const blocks = event?.data?.message?.content ?? [];
         const text = blocks.filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim();
         if (!text) return;
         await writeTextSafe(join(dir, 'digest.md'),
           `# Memory digest\n\n> generated on compaction ${new Date().toISOString()}\n\n${text}\n`, policy);
-        log('digest written', s.id, dir);
+        log('digest written', sessionId, dir);
       } catch (e) { err('digest failed', String(e)); }
     }
 
@@ -217,20 +263,26 @@ return {
       return { ...downstream, content: [...base, block] };
     });
 
-    // ── model tool: force a sync now (same code path as the hooks) ──
+    // ── model tool: force a sync now; sessionId is agent-specified (skill) ──
     harness.registerTool(ctx, harness.defineTool({
       name: 'memory_sync_now',
-      description: 'Force a memory-system sync of the current session: append the raw session event log under <repo-root>/.memory/{version}/{date}/{sessionId}/session/ (same code path as the memory-system-hooks triggers: plan-mode end, compaction, turn close, dispose).',
-      parameters: {},
+      description: 'Force a memory-system sync of the current session. sessionId is required and agent-specified per the skill (e.g. \'my-session\'): it is remembered and reused by the hooks; call again with a different id to switch. Writes <repo-root>/.memory/{version}/{date}/{sessionId}/session/ (same code path as the hooks; existing dirs are matched by sessionId and reused).',
+      parameters: { sessionId: { type: 'string', required: true } },
       output: { schema: { type: 'string' }, render(_a, v) { return [{ type: 'text', text: v }] } },
-      async execute() {
+      async execute(args) {
         const agents = ctx.get('agents');
         let agent;
         try { agent = agents?.requireInitiator?.(); } catch { /* fall through */ }
         if (!agent) agent = agents?.list?.()[0];
         if (!agent?.session) return 'no live agent session to sync';
+        const s = sessionOf(agent.session);
+        const given = sanitizeSessionId(args?.sessionId);
+        if (!given) return 'memory_sync_now requires a non-empty sessionId (agent-specified per the skill)';
+        agentIds.set(s.dshId, given);
+        const repoRoot = await findRepoRoot(s.cwd);
+        const { dir, reused } = await resolveSessionDir(repoRoot, given);
         await syncSession(agent.session, 'tool:memory-sync-now');
-        return 'memory-sync done';
+        return `memory-sync done -> ${dir} (sessionId: ${given}${reused ? ', reused existing dir' : ', created'})`;
       },
     }));
   },
