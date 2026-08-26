@@ -43,6 +43,11 @@ Two version numbers exist and must not be conflated:
 
 The repository's current latest version is the lexically greatest `{version}` directory currently present under `/.memory`. When no version directory exists yet, treat the current version as `v0.0.1`.
 
+Write versus read version semantics:
+
+- **Write** (`memory-sync` and the automatic hooks): the session writes under the repository's current **latest** version by default. A session may pin a different write version with `memory-version` (e.g. `/memory-version v0.0.2`), after which every write of that session lands under the pinned version instead.
+- **Read** (`memory-load`, `memory-search`, `memory-info`): default to a **global** search across every version under `/.memory`; a `{version}` parameter (e.g. `/memory-load version=v0.0.1`) narrows the search to that one version.
+
 ## Resolving the repository root
 
 Every operation resolves paths against the repository root, then the memory root beneath it:
@@ -53,7 +58,7 @@ Every operation resolves paths against the repository root, then the memory root
 
 ## Operations
 
-These are the six operations this skill defines. Prefer the existing filesystem tools (`glob`, `read`, `grep`, `write`, `edit`, `pwsh`) to carry them out; the semantics below are the contract, not a fixed implementation.
+These are the eight operations this skill defines. Prefer the existing filesystem tools (`glob`, `read`, `grep`, `write`, `edit`, `pwsh`) to carry them out; the semantics below are the contract, not a fixed implementation.
 
 ### memory-sync
 
@@ -62,9 +67,9 @@ Persist the current session into a `{session_dir}`: its `session/` history, its 
 Steps:
 
 1. Resolve the repository root and memory root.
-2. Determine `{version}` — the repository's current latest version (see *Versioning*).
+2. Determine `{version}` — the session's pinned write version when one was set with `memory-version`; otherwise the repository's current latest version (see *Versioning*).
 3. Determine `{date}` — today's date as `YYYYMMDD`.
-4. Match by `{sessionId}`: search the existing `{session_dir}` directories for one whose path ends in this `{sessionId}`. If found, reuse it; if not found, create a new `/.memory/{version}/{date}/{sessionId}`.
+4. Match by `{sessionId}`: search the existing `{session_dir}` directories **under the write version** for one whose path ends in this `{sessionId}`. If found, reuse it; if not found, create a new `/.memory/{version}/{date}/{sessionId}` under the write version.
 5. Write the raw conversation content into `session/` under the matched or new directory. Do not compress it.
 6. Write or update one file per plan under `plan/`.
 7. Write or update the ticket files under `tickets/`, each carrying implementation content, status, and progress.
@@ -78,7 +83,7 @@ Recall prior memory quickly for the agent.
 Steps:
 
 1. Resolve the memory root.
-2. Enumerate `digest.md` files under `/.memory/{version}/{date}/{sessionId}/digest.md` (optionally filtered by `{version}`, `{date}`, or `{sessionId}`).
+2. Enumerate `digest.md` files under `/.memory/{version}/{date}/{sessionId}/digest.md`. By default this is a **global** search across every version; a `{version}`, `{date}`, or `{sessionId}` parameter narrows it (e.g. `/memory-load version=v0.0.1` restricts the search to that one version).
 3. Read the matching `digest.md` files and present their summaries. If a more specific recall is requested, fall back to reading the corresponding `session/`, `plan/`, or `tickets/` content.
 
 Return the digest text (or the deeper content) so the agent can re-orient on the repository without replaying raw history.
@@ -103,7 +108,7 @@ Find relevant memory by semantic query or by key.
 Steps:
 
 1. Resolve the memory root.
-2. If the caller supplies `{sessionId}`, `{date}`, or `{version}`, match `{session_dir}` directories directly and return their `digest.md` paths plus `{session_dir}` paths.
+2. If the caller supplies `{sessionId}`, `{date}`, or `{version}`, match `{session_dir}` directories directly and return their `digest.md` paths plus `{session_dir}` paths. With no key, the search is **global** across every version.
 3. If the caller supplies a semantic query, read the `digest.md` files (and, where the digest is insufficient, the corresponding `session/`, `plan/`, and `tickets/` content) and rank them by relevance to the query.
 4. Return the matching `digest.md` content and the corresponding `{session_dir}` paths.
 
@@ -123,9 +128,27 @@ Show memory help.
 
 Return:
 
-- A brief description of each memory operation (`memory-sync`, `memory-load`, `memory-delete`, `memory-search`, `memory-info`, `memory-help`, `memory-dsh-hook`).
+- A brief description of each memory operation (`memory-sync`, `memory-load`, `memory-delete`, `memory-search`, `memory-info`, `memory-version`, `memory-help`, `memory-dsh-hook`).
 - The repository's current latest version (see *Versioning*).
 - The memory-system skill version (initial `v0.0.1`).
+
+### memory-version
+
+Pin the memory format version this session writes under (e.g. `/memory-version v0.0.2` switches the session from `/.memory/v0.0.1` to `/.memory/v0.0.2`).
+
+Steps:
+
+1. Resolve the memory root.
+2. Validate the requested version against `v<major>.<minor>.<patch>` (e.g. `v0.0.2`); reject anything else with guidance.
+3. Pin the version for the current session: subsequent `memory-sync` runs (and the automatic hooks) write under `/.memory/{pinned}/` — matching by `{sessionId}` **within that version** and creating `/.memory/{pinned}/{date}/{sessionId}` when absent.
+4. Report the pinned version and the effective `{session_dir}`.
+
+Rules:
+
+- The pin is session-scoped: it affects only the session that sets it, until changed by another `memory-version`.
+- With no pin, writes use the repository's current **latest** version (see *Versioning*).
+- Read operations (`memory-load`, `memory-search`, `memory-info`) stay **global** across all versions by default regardless of the pin; only an explicit `{version}` parameter narrows them.
+- Pinning does not move or copy existing memory — it changes where new writes land.
 
 ### memory-dsh-hook
 
@@ -168,6 +191,7 @@ Notes:
 - The hook plugin exports the raw session log as `{session_dir}/session/events.jsonl` — JSONL of `{seq, type, data}` session events, append-only — plus `session/README.md` describing the export. This is the plugin's `session/` content format; the agent may add its own files alongside it.
 - On plan-mode end the plugin lands the approved plan under `{session_dir}/plan/`, one file per plan named by its first markdown heading (fallback `plan.md`), extracted from the `exit_plan_mode` tool-call arguments. On compaction it writes `{session_dir}/digest.md` from the `compaction/summary` blocks (or the compact checkpoint `user/message` content when no summary block exists), then syncs `session/`.
 - When the hook plugin is mounted it also registers the `memory_sync_now` model tool, which forces a sync of the current session through the same code path as the hooks. Its `sessionId` is agent-specified, required, and must follow the naming rule in *Memory model* (a kebab-case task slug, e.g. `memory_sync_now(sessionId: 'memory-system-skill-dev')`); the tool REJECTS ids that violate the rule (bare numbers, UUIDs, generic words) and asks for a task slug. The id is remembered and reused by every hook, and sync matches existing `{session_dir}` directories by it. Before the agent specifies an id, hooks fall back to a sanitized session-title slug — never the internal session UUID.
+- The plugin also registers `memory_version_now(version)` — the hook-side carrier of `memory-version`: it pins (or clears with an empty string) the memory format version the session writes under, and every hook then writes under `/.memory/{pinned}/` while reads stay global (see *memory-version*).
 - The hooks land files directly with the filesystem service; they guarantee the trigger points but do not replace the agent-side operations in this document — when the plugin is absent, the agent performs those operations at the same triggers.
 - To install the hook plugin so it auto-mounts in every session, run the `memory-dsh-hook` operation (see *Operations*); it copies a `standard`-based preset, wires `plugin/memory-system-hooks.mjs` into it, and mount-validates the result.
 

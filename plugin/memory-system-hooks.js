@@ -45,6 +45,7 @@ return {
     const lastSynced = new Map(); // dshSessionId -> last seq appended
     const rootCache = new Map(); // cwd -> repo root
     const agentIds = new Map(); // dshSessionId -> agent-specified sessionId
+    const pinnedVersions = new Map(); // dshSessionId -> pinned write version (memory-version)
     const policyService = ctx.get('sandboxPolicy');
     const titleService = ctx.get('sessionTitle');
 
@@ -139,12 +140,23 @@ return {
       return `${d.getFullYear()}${mm}${dd}`;
     }
 
-    // memory-sync matches by {sessionId} across versions/dates and REUSES an
-    // existing {session_dir}; only when none exists it creates one under the
-    // latest version and today's date. (skill: memory-sync semantics)
-    async function resolveSessionDir(repoRoot, sessionId) {
+    // memory-sync matches by {sessionId} and REUSES an existing {session_dir}.
+    // Pinned (memory-version): match and create ONLY under the pinned version.
+    // Unpinned: match across every version; create under the repo's LATEST
+    // version (skill: write defaults to the largest version when unspecified).
+    async function resolveSessionDir(repoRoot, sessionId, pinned) {
       const memoryRoot = join(repoRoot, MEMORY_DIR);
       const versions = (await listDirNames(memoryRoot)).sort();
+      if (pinned) {
+        if (versions.includes(pinned)) {
+          const dates = (await listDirNames(join(memoryRoot, pinned))).sort();
+          for (let j = dates.length - 1; j >= 0; j--) {
+            const sids = await listDirNames(join(memoryRoot, pinned, dates[j]));
+            if (sids.includes(sessionId)) return { dir: join(memoryRoot, pinned, dates[j], sessionId), reused: true };
+          }
+        }
+        return { dir: join(memoryRoot, pinned, today(), sessionId), reused: false };
+      }
       for (let i = versions.length - 1; i >= 0; i--) {
         const dates = (await listDirNames(join(memoryRoot, versions[i]))).sort();
         for (let j = dates.length - 1; j >= 0; j--) {
@@ -155,6 +167,7 @@ return {
       const version = versions.length ? versions[versions.length - 1] : 'v0.0.1';
       return { dir: join(memoryRoot, version, today(), sessionId), reused: false };
     }
+    function pinFor(dshId) { return pinnedVersions.get(dshId); }
 
     function sessionOf(agentOrSession) {
       const s = agentOrSession?.session ?? agentOrSession;
@@ -173,7 +186,7 @@ return {
         const sessionId = resolveSessionId(session, s.dshId);
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
-        const { dir } = await resolveSessionDir(repoRoot, sessionId);
+        const { dir } = await resolveSessionDir(repoRoot, sessionId, pinFor(s.dshId));
         const events = s.events;
         const lastSeq = lastSynced.get(s.dshId) ?? -1;
         const fresh = events.filter((ev) => Number.isInteger(ev.seq) && ev.seq > lastSeq);
@@ -220,7 +233,7 @@ return {
         const sessionId = resolveSessionId(session, s.dshId);
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
-        const { dir } = await resolveSessionDir(repoRoot, sessionId);
+        const { dir } = await resolveSessionDir(repoRoot, sessionId, pinFor(s.dshId));
         const blocks = digestBlocksFromEvent(event);
         const text = blocks.filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim();
         if (!text) return;
@@ -261,7 +274,7 @@ return {
         const sessionId = resolveSessionId(session, s.dshId);
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
-        const { dir } = await resolveSessionDir(repoRoot, sessionId);
+        const { dir } = await resolveSessionDir(repoRoot, sessionId, pinFor(s.dshId));
         const w = await writeTextSafe(join(dir, 'plan', planFileName(plan)),
           `> captured on plan-mode exit ${new Date().toISOString()}\n\n${plan}\n`, policy);
         if (w.ok) log('plan written', sessionId, reason, join(dir, 'plan'));
@@ -348,9 +361,40 @@ return {
         if (why) return `invalid sessionId ${JSON.stringify(args?.sessionId)}: ${why}. Choose a kebab-case task slug naming this session's goal (e.g. 'memory-system-skill-dev').`;
         agentIds.set(s.dshId, given);
         const repoRoot = await findRepoRoot(s.cwd);
-        const { dir, reused } = await resolveSessionDir(repoRoot, given);
+        const { dir, reused } = await resolveSessionDir(repoRoot, given, pinFor(s.dshId));
         await syncSession(agent.session, 'tool:memory-sync-now');
         return `memory-sync done -> ${dir} (sessionId: ${given}${reused ? ', reused existing dir' : ', created'})`;
+      },
+    }));
+
+    // ── model tool: pin the memory format version this session writes under ──
+    // (skill: memory-version). With no pin, writes use the repo's LATEST
+    // version. Reads (memory-load/search/info) stay global across versions.
+    harness.registerTool(ctx, harness.defineTool({
+      name: 'memory_version_now',
+      description: 'Pin the memory format version this session writes under, e.g. memory_version_now(version: \'v0.0.2\') switches writes from /.memory/v0.0.1 to /.memory/v0.0.2. The pin is session-scoped and remembered by every hook. With no pin, writes use the repo\'s latest version. Reads (memory-load/search/info) stay global across all versions unless a version parameter is given. Pass the empty string to clear the pin.',
+      parameters: { version: { type: 'string', required: true, description: 'Memory format version to write under, in v<major>.<minor>.<patch> form (e.g. \'v0.0.2\'). Empty string clears the pin (back to latest).' } },
+      output: { schema: { type: 'string' }, render(_a, v) { return [{ type: 'text', text: v }] } },
+      async execute(args) {
+        const agents = ctx.get('agents');
+        let agent;
+        try { agent = agents?.requireInitiator?.(); } catch { /* fall through */ }
+        if (!agent) agent = agents?.list?.()[0];
+        if (!agent?.session) return 'no live agent session';
+        const s = sessionOf(agent.session);
+        const raw = String(args?.version ?? '').trim();
+        if (raw === '') {
+          pinnedVersions.delete(s.dshId);
+          return 'write version pin cleared; writes now use the repo\'s latest version';
+        }
+        if (!/^v\d+\.\d+\.\d+$/.test(raw)) {
+          return `invalid version ${JSON.stringify(raw)}: use v<major>.<minor>.<patch> (e.g. 'v0.0.2')`;
+        }
+        pinnedVersions.set(s.dshId, raw);
+        const sessionId = resolveSessionId(agent.session, s.dshId);
+        const repoRoot = await findRepoRoot(s.cwd);
+        const { dir, reused } = await resolveSessionDir(repoRoot, sessionId, raw);
+        return `write version pinned to ${raw}; session writes now land in ${dir}${reused ? ' (existing dir reused)' : ''}`;
       },
     }));
   },

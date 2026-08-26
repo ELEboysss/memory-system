@@ -2,7 +2,7 @@
 
 A DeepSeek Harness (dsh) **skill** that manages repository-scoped agent memory.
 
-The skill persists what the agent has done on a repository into `<repo-root>/.memory`, so a later session can recall it quickly: raw session history (`session/`), the working plan (`plan/`), the concrete tickets derived from the plan (`tickets/`), and the memory summary (`digest.md`). Six operations are defined: `memory-sync`, `memory-load`, `memory-delete`, `memory-search`, `memory-info`, `memory-help`.
+The skill persists what the agent has done on a repository into `<repo-root>/.memory`, so a later session can recall it quickly: raw session history (`session/`), the working plan (`plan/`), the concrete tickets derived from the plan (`tickets/`), and the memory summary (`digest.md`). Eight operations are defined: `memory-sync`, `memory-load`, `memory-delete`, `memory-search`, `memory-info`, `memory-version`, `memory-help`, `memory-dsh-hook`.
 
 ## What is in this repository
 
@@ -68,7 +68,7 @@ The skill's contract (see `SKILL.md` → *Hooks — mandatory automatic executio
 | A turn closes | incremental `memory-sync` | `agent/turn-stopping` |
 | Agent / session disposed | final `memory-sync` | `agent/disposed` |
 
-It also registers the `memory_sync_now(sessionId)` model tool — `sessionId` is agent-specified and required per the skill (e.g. `memory_sync_now(sessionId: 'my-session')`), remembered and reused by every hook; before the agent specifies one, hooks fall back to a sanitized session-title slug. Writes carry the session's resolved sandbox policy, so under the default `workspace-write` mode it persists `<session-cwd>/.memory/…` within the same confinement as the agent's own tools.
+It also registers two model tools: `memory_sync_now(sessionId)` — forces a sync; `sessionId` is agent-specified and required per the skill (a kebab-case task slug, e.g. `memory_sync_now(sessionId: 'memory-system-skill-dev')`), remembered and reused by every hook — and `memory_version_now(version)` — pins the memory format version the session writes under (e.g. `v0.0.2`), per the `memory-version` operation; with no pin, writes use the repo's latest version while reads stay global across all versions. Before the agent specifies a sessionId, hooks fall back to a sanitized session-title slug. Writes carry the session's resolved sandbox policy, so under the default `workspace-write` mode it persists `<session-cwd>/.memory/…` within the same confinement as the agent's own tools.
 
 Install (one-time, per session): paste the `return { … }` expression into `cordis_define` (`code.host`) and `cordis_run`; for persistence, mount the same code as a preset plugin row.
 
