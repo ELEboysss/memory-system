@@ -71,6 +71,17 @@ export default {
       for (let i = 0; i < input.length; i++) h = ((h * 33) ^ input.charCodeAt(i)) >>> 0;
       return `session-${h.toString(16).padStart(8, '0')}`;
     }
+    // Enforce the skill's sessionId naming rule: a kebab-case task slug with
+    // at least 3 chars and at least one letter — never a bare number, UUID,
+    // timestamp, or generic word like 'session'/'test'.
+    function invalidSessionId(id) {
+      if (!id) return 'empty after sanitization';
+      if (id.length < 3) return 'too short (min 3 chars)';
+      if (!/[a-z]/.test(id)) return 'must contain at least one letter (no bare numbers)';
+      if (/^(session|test|default|untitled)$/.test(id)) return `generic name '${id}' is not a task slug`;
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}/.test(id) || /^session-[0-9a-f]{8}$/.test(id)) return 'UUIDs/hashes are not allowed as sessionId';
+      return undefined;
+    }
     function resolveSessionId(session, dshId) {
       const specified = agentIds.get(dshId);
       if (specified) return specified;
@@ -327,11 +338,11 @@ export default {
     const tools = ctx.get('tools');
     tools?.register({
       name: 'memory_sync_now',
-      description: 'Force a memory-system sync of the current session. sessionId is required and agent-specified per the skill (e.g. \'my-session\'): it is remembered and reused by the hooks; call again with a different id to switch. Writes <repo-root>/.memory/{version}/{date}/{sessionId}/session/ (same code path as the hooks; existing dirs are matched by sessionId and reused).',
+      description: 'Force a memory-system sync of the current session. sessionId is required and agent-specified per the skill: a kebab-case task slug naming this session\'s goal (e.g. \'memory-system-skill-dev\'), at least 3 chars with at least one letter — never a bare number, UUID, timestamp, or generic word. The id is remembered and reused by the hooks; call again with a different id to switch. Writes <repo-root>/.memory/{version}/{date}/{sessionId}/session/ (same code path as the hooks; existing dirs are matched by sessionId and reused).',
       parameters: {
         type: 'object',
         properties: {
-          sessionId: { type: 'string', description: 'Agent-specified session id (remembered and reused by the hooks).' },
+          sessionId: { type: 'string', description: 'Agent-specified session id (remembered and reused by the hooks). MUST be a kebab-case task slug naming this session\'s goal — at least 3 chars with at least one letter, e.g. \'memory-system-skill-dev\', \'fix-login-redirect\'. Never a bare number, UUID, timestamp, or generic word like \'session\'/\'test\'.' },
         },
         required: ['sessionId'],
       },
@@ -340,7 +351,8 @@ export default {
         const s = sessionOf(exec?.agent);
         if (!s || !s.cwd) return 'no live agent session to sync';
         const given = sanitizeSessionId(args?.sessionId);
-        if (!given) return 'memory_sync_now requires a non-empty sessionId (agent-specified per the skill)';
+        const why = invalidSessionId(given);
+        if (why) return `invalid sessionId ${JSON.stringify(args?.sessionId)}: ${why}. Choose a kebab-case task slug naming this session's goal (e.g. 'memory-system-skill-dev').`;
         agentIds.set(s.dshId, given);
         const repoRoot = await findRepoRoot(s.cwd);
         const { dir, reused } = await resolveSessionDir(repoRoot, given);

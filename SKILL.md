@@ -25,7 +25,7 @@ Path segments:
 
 - `{version}` — memory format version, e.g. the initial version is `v0.0.1`.
 - `{date}` — the date the session was generated, in `YYYYMMDD` form, e.g. `20260825`.
-- `{sessionId}` — the session id, chosen by the agent. It is stable for the lifetime of one session and is the key used to match an existing `{session_dir}` on a later `memory-sync`.
+- `{sessionId}` — the session id, chosen by the agent. It is stable for the lifetime of one session and is the key used to match an existing `{session_dir}` on a later `memory-sync`. **Naming rule (the agent MUST follow it):** a short kebab-case slug naming this session's task — lowercase letters, digits, and `-`; at least 3 characters with at least one letter; at most 64 characters. Derive it from the session's goal (e.g. `memory-system-skill-dev`, `fix-login-redirect`, `add-payments-api`). Never use a bare number (`1`), a UUID or hash, a timestamp, or a generic word like `session` / `test`.
 
 Inside a `{session_dir}`:
 
@@ -167,7 +167,7 @@ Notes:
 
 - The hook plugin exports the raw session log as `{session_dir}/session/events.jsonl` — JSONL of `{seq, type, data}` session events, append-only — plus `session/README.md` describing the export. This is the plugin's `session/` content format; the agent may add its own files alongside it.
 - On plan-mode end the plugin lands the approved plan under `{session_dir}/plan/`, one file per plan named by its first markdown heading (fallback `plan.md`), extracted from the `exit_plan_mode` tool-call arguments. On compaction it writes `{session_dir}/digest.md` from the `compaction/summary` blocks (or the compact checkpoint `user/message` content when no summary block exists), then syncs `session/`.
-- When the hook plugin is mounted it also registers the `memory_sync_now` model tool, which forces a sync of the current session through the same code path as the hooks. Its `sessionId` is agent-specified and required (e.g. `memory_sync_now(sessionId: 'my-session')`): the id is remembered and reused by every hook, and sync matches existing `{session_dir}` directories by it. Before the agent specifies an id, hooks fall back to a sanitized session-title slug — never the internal session UUID.
+- When the hook plugin is mounted it also registers the `memory_sync_now` model tool, which forces a sync of the current session through the same code path as the hooks. Its `sessionId` is agent-specified, required, and must follow the naming rule in *Memory model* (a kebab-case task slug, e.g. `memory_sync_now(sessionId: 'memory-system-skill-dev')`); the tool REJECTS ids that violate the rule (bare numbers, UUIDs, generic words) and asks for a task slug. The id is remembered and reused by every hook, and sync matches existing `{session_dir}` directories by it. Before the agent specifies an id, hooks fall back to a sanitized session-title slug — never the internal session UUID.
 - The hooks land files directly with the filesystem service; they guarantee the trigger points but do not replace the agent-side operations in this document — when the plugin is absent, the agent performs those operations at the same triggers.
 - To install the hook plugin so it auto-mounts in every session, run the `memory-dsh-hook` operation (see *Operations*); it copies a `standard`-based preset, wires `plugin/memory-system-hooks.mjs` into it, and mount-validates the result.
 
