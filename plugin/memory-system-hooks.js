@@ -19,8 +19,11 @@
 // AGENT-SPECIFIED. The plugin resolves it in this order:
 //   1. the id the agent gave `memory_sync_now(sessionId)` (remembered for the
 //      session and reused by every hook; call with another id to switch)
-//   2. a slug derived from the session title
-//   3. a short hash of the dsh session id (never the raw internal UUID)
+//   2. a VALID slug derived from the session title (fallbacks are validated
+//      against the skill's naming rule)
+//   3. the last sessionId persisted for this repo (continuity across
+//      compaction, where the dsh session id and title both change)
+//   4. a deterministic valid hash fallback (never the raw internal UUID)
 // `memory-sync` matches by `sessionId` across versions/dates and reuses an
 // existing `{session_dir}`; only when none exists it creates one under the
 // latest version and today's date.
@@ -46,6 +49,8 @@ return {
     const rootCache = new Map(); // cwd -> repo root
     const agentIds = new Map(); // dshSessionId -> agent-specified sessionId
     const pinnedVersions = new Map(); // dshSessionId -> pinned write version (memory-version)
+    const lastByRepo = new Map(); // repoRoot -> last resolved sessionId (persisted for cross-compaction continuity)
+    const LAST_SESSION_FILE = '.last-session.json';
     const policyService = ctx.get('sandboxPolicy');
     const titleService = ctx.get('sessionTitle');
 
@@ -70,7 +75,9 @@ return {
     function hashId(input) {
       let h = 5381;
       for (let i = 0; i < input.length; i++) h = ((h * 33) ^ input.charCodeAt(i)) >>> 0;
-      return `session-${h.toString(16).padStart(8, '0')}`;
+      // Valid kebab-case fallback: prefixed with a letter so it always passes
+      // invalidSessionId (never a bare number, not the rejected `session-<hex>`).
+      return `s-${h.toString(16).padStart(8, '0')}`;
     }
     // Enforce the skill's sessionId naming rule: a kebab-case task slug with
     // at least 3 chars and at least one letter — never a bare number, UUID,
@@ -83,15 +90,44 @@ return {
       if (/^[0-9a-f]{8}-[0-9a-f]{4}/.test(id) || /^session-[0-9a-f]{8}$/.test(id)) return 'UUIDs/hashes are not allowed as sessionId';
       return undefined;
     }
-    function resolveSessionId(session, dshId) {
+    // Resolve the sessionId for this sync. Order: agent-specified id (in-memory,
+    // remembered via memory_sync_now) → a VALID slug from the session title →
+    // the last sessionId persisted for this repo (continuity across compaction,
+    // where the dsh session id and title both change) → a deterministic hash.
+    // Every fallback is validated so the hooks never write an id that the
+    // memory_sync_now tool itself would reject (e.g. a bare number "1" or a
+    // `session-<hex>` hash — the two shapes observed to fork sessions).
+    async function resolveSessionId(session, dshId, repoRoot) {
       const specified = agentIds.get(dshId);
       if (specified) return specified;
-      try {
-        const title = titleService?.get(session)?.title;
-        const slug = sanitizeSessionId(title);
-        if (slug) return slug;
-      } catch { /* fall through */ }
+      let title;
+      try { title = titleService?.get(session)?.title; } catch { /* ignore */ }
+      const slug = sanitizeSessionId(title);
+      if (slug && !invalidSessionId(slug)) return slug;
+      const last = await loadLastSessionId(repoRoot);
+      if (last) return last;
       return hashId(dshId);
+    }
+    async function loadLastSessionId(repoRoot) {
+      if (!repoRoot) return undefined;
+      if (lastByRepo.has(repoRoot)) return lastByRepo.get(repoRoot);
+      const r = await readTextSafe(join(repoRoot, MEMORY_DIR, LAST_SESSION_FILE));
+      if (r.ok) {
+        try {
+          const v = JSON.parse(r.text);
+          if (typeof v?.sessionId === 'string' && v.sessionId) {
+            lastByRepo.set(repoRoot, v.sessionId);
+            return v.sessionId;
+          }
+        } catch { /* ignore corrupt pointer */ }
+      }
+      return undefined;
+    }
+    async function saveLastSessionId(repoRoot, sessionId, policy) {
+      if (!repoRoot || !sessionId) return;
+      lastByRepo.set(repoRoot, sessionId);
+      await writeTextSafe(join(repoRoot, MEMORY_DIR, LAST_SESSION_FILE),
+        `${JSON.stringify({ sessionId })}\n`, policy);
     }
 
     async function statPath(path) {
@@ -183,9 +219,10 @@ return {
       try {
         const s = sessionOf(session);
         if (!s || !s.cwd) { err('sync skipped: no cwd', reason); return; }
-        const sessionId = resolveSessionId(session, s.dshId);
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
+        const sessionId = await resolveSessionId(session, s.dshId, repoRoot);
+        await saveLastSessionId(repoRoot, sessionId, policy);
         const { dir } = await resolveSessionDir(repoRoot, sessionId, pinFor(s.dshId));
         const events = s.events;
         const lastSeq = lastSynced.get(s.dshId) ?? -1;
@@ -230,9 +267,10 @@ return {
       try {
         const s = sessionOf(session);
         if (!s || !s.cwd) return;
-        const sessionId = resolveSessionId(session, s.dshId);
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
+        const sessionId = await resolveSessionId(session, s.dshId, repoRoot);
+        await saveLastSessionId(repoRoot, sessionId, policy);
         const { dir } = await resolveSessionDir(repoRoot, sessionId, pinFor(s.dshId));
         const blocks = digestBlocksFromEvent(event);
         const text = blocks.filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim();
@@ -271,9 +309,10 @@ return {
         if (!s || !s.cwd) return;
         const plan = extractPlanText(s.events ?? []);
         if (!plan) { log('plan skipped (no exit_plan_mode plan in events)', reason); return; }
-        const sessionId = resolveSessionId(session, s.dshId);
         const policy = policyFor(session);
         const repoRoot = await findRepoRoot(s.cwd);
+        const sessionId = await resolveSessionId(session, s.dshId, repoRoot);
+        await saveLastSessionId(repoRoot, sessionId, policy);
         const { dir } = await resolveSessionDir(repoRoot, sessionId, pinFor(s.dshId));
         const w = await writeTextSafe(join(dir, 'plan', planFileName(plan)),
           `> captured on plan-mode exit ${new Date().toISOString()}\n\n${plan}\n`, policy);
@@ -391,8 +430,8 @@ return {
           return `invalid version ${JSON.stringify(raw)}: use v<major>.<minor>.<patch> (e.g. 'v0.0.2')`;
         }
         pinnedVersions.set(s.dshId, raw);
-        const sessionId = resolveSessionId(agent.session, s.dshId);
         const repoRoot = await findRepoRoot(s.cwd);
+        const sessionId = await resolveSessionId(agent.session, s.dshId, repoRoot);
         const { dir, reused } = await resolveSessionDir(repoRoot, sessionId, raw);
         return `write version pinned to ${raw}; session writes now land in ${dir}${reused ? ' (existing dir reused)' : ''}`;
       },
