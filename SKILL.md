@@ -168,9 +168,11 @@ Steps:
 6. **Mount-validate**: call `standingKeyFor(id)`; it must return normally (a failure names the offending row — fix and retry).
 7. **Hand off**: tell the user to start sessions on the new preset; the hooks then auto-mount in every session. The skill-catalog entry comes from step 1 and needs no preset work.
 
-Fallback without probe tooling: perform steps 3–5 with plain filesystem tools (copy the preset directory, write the module and the row), then validate with `standingKeyFor` through a probe.
+Fallback without probe tooling: perform steps 3–5 with plain filesystem tools (copy the preset directory, write the module and the row), then validate with `standingKeyFor` through a probe — or, with no probe tooling at all, run `tools/check-preset.mjs` from the skill repository (`node tools/check-preset.mjs <preset>/agent.cordis.yml <harness>/resources/app`), which loads each row's plugin from the harness install and runs that row's real `Config` schema, the same validation a mount performs.
 
 Operational note — updating the module later: row modules are cached per process (Node ESM) and a standing generation only recomposes when `agent.cordis.yml` changes, so editing `plugin/memory-system-hooks.mjs` alone is NOT picked up by a running process. After a module change, restart the process, or point the row at a new file name (e.g. `memory-system-hooks-v2.mjs`) so the next session imports a fresh module.
+
+Operational note — a copy rots when DSH updates: the preset is a frozen copy of the `standard` preset, and a DSH update can move a plugin's config contract under it. Every session on that preset then fails to start — and because the composition never mounts, the hooks row is never reached and no hook fires. `dsh-persona` did exactly this at DSH 0.9.1: the persona key changed from `text` to required `prefix`, so an unpatched copy reports `failed to apply loader entry persona (@deepseek-ai/dsh-persona): invalid config: - $.prefix missing required value`. Diagnose with `node tools/check-preset.mjs <preset>/agent.cordis.yml <harness>/resources/app` from the skill repository (it runs each row's real `Config` schema), then either patch the flagged row to the shape in `<harness>/node_modules/@deepseek-ai/dsh-agent-presets/presets/standard/agent.cordis.yml`, or delete the preset and re-run this operation to copy a fresh one.
 
 To uninstall, remove the `memory-system-hooks` row and the preset via `agentPresets.remove(id)` (or delete the preset directory).
 

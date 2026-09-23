@@ -10,6 +10,8 @@ The skill persists what the agent has done on a repository into `<repo-root>/.me
 memory-system/
 ├── SKILL.md       # the skill itself — this file at the repository root is what dsh collects
 ├── README.md      # this file
+├── plugin/        # companion hook plugin, mounted by a preset row (see Hooks below)
+├── tools/         # check-preset.mjs — validates a preset copy against the running harness
 └── .gitignore     # ignores runtime memory data (/.memory)
 ```
 
@@ -89,6 +91,34 @@ The skill itself is already collected at the dsh user root (`~/.dsh/skills/memor
 > **Updating the plugin later:** row modules are cached per process and a standing generation only recomposes when `agent.cordis.yml` changes. After editing `plugin/memory-system-hooks.mjs`, restart the process — or point the row at a new file name (e.g. `memory-system-hooks-v2.mjs`) so the next session imports the fresh module.
 
 Do not base the preset on a copy of `cordis`: its `tool-cordis` row registers a process-global inspect provider, so a second cordis-based preset collides with a live cordis session (`Service already registered`). `standard` mounts cleanly.
+
+### Repairing a copy after a DSH update
+
+A user preset is a **frozen copy**: nothing keeps it in step with the shipped preset it was copied from, and a DSH update moves plugin config contracts. The copy still parses as YAML, so the rot surfaces only when a session fails to start on it:
+
+```
+failed to apply loader entry persona (@deepseek-ai/dsh-persona):
+invalid config: - $.prefix missing required value (at prefix)
+```
+
+That one is the persona row: the key used to be `text`, and the current schema (`dsh-persona@0.1.5-rc.2`, the version shipped with DSH 0.9.1) requires `prefix`, with `suffix` for the rest. The hooks row is not at fault — the preset never mounts, so `plugin/memory-system-hooks.mjs` never loads and no hook fires.
+
+Validate a copy against the harness that is actually running:
+
+```powershell
+# the harness the desktop app launched from
+$app = Join-Path (Split-Path (Get-Process 'DSH Desktop')[0].Path) 'resources\app'
+node tools/check-preset.mjs "$env:DSH_HOME\.agent-presets\memory\agent.cordis.yml" $app
+```
+
+`tools/check-preset.mjs` loads every row's plugin out of that harness install and runs the row's real `Config` schema — the same validation the mount performs, minus starting the plugin. It exits non-zero with the offending rows named, and reports rows the shipped `standard` has gained since the copy was taken (the reverse drift: a copy that predates the `present` tool row silently loses `present`; informational, since a trimmed copy is legitimate).
+
+Repair a flagged row either way:
+
+- **Patch the row** to the shape the shipped preset shows and re-run the check. Keeps the wired hooks row and any local edits. Reference: `<harness>\node_modules\@deepseek-ai\dsh-agent-presets\presets\standard\agent.cordis.yml`.
+- **Or re-copy**: delete the preset and run the `memory-dsh-hook` operation again; it copies the current `standard`, valid by construction.
+
+Re-run the check after every DSH update: a copy is only known-good against the harness it was checked on.
 
 ## Versions
 
